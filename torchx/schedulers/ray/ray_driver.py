@@ -4,15 +4,32 @@
 # This source code is licensed under the BSD-style license found in the
 # LICENSE file in the root directory of this source tree.
 
+
+"""
+We use placement groups to reserve resources in the ray cluster, it
+ensure that a job will not lose the resources it used to have before
+the job is finished. The deadlock situtation while launch multiple jobs at the
+same time is avoided by create a big placement group that contains the minimum
+required command actors for the job. Once the placement groups are created(may
+not be scheduled on a physical node yet), then we schedule command actors to
+the corresponding placement group, each actor is associated with a placement
+group which hold the resource the acotr needs. Each time a placement group successfully
+acquired the resources from the ray cluster, the actor scheduled to this placement group
+will be executed. Command actors are state machines their behavior is defined by the
+_step function, this give more flexibility to us if we want to bette handle the
+node failures.
+"""
 import json
 import logging
 import os
+import socket
 import subprocess
 import sys
+from contextlib import closing
+from dataclasses import dataclass
 from typing import Dict, List, Optional, Tuple, TYPE_CHECKING
 
 import ray
-from ray.train.utils import get_address_and_port
 from ray.util.placement_group import PlacementGroup
 
 if TYPE_CHECKING:
@@ -70,18 +87,18 @@ class CommandActor:  # pragma: no cover
             raise RuntimeError(f"exec_module failed with return code {returncode}")
 
     def get_actor_address_and_port(self) -> Tuple[str, int]:
-        addr, port = get_address_and_port()
-        print("get_actor_address_and_port before: ", addr, port)
+        # addr = ray.util.get_node_ip_address()
         addr = os.getenv("MY_POD_IP")
-        print("get_actor_address_and_port: ", addr, port)
-        return addr, 49782
+        with closing(socket.socket(socket.AF_INET, socket.SOCK_STREAM)) as s:
+            s.bind(("", 0))
+            s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            port = s.getsockname()[1]
+        return addr, port
 
     def set_address_and_port(self, address: str, port: int) -> None:
         self.master_addr = address
         self.master_port = port
         print("set_address_and_port: ", address, port)
-        #os.environ["MASTER_ADDR"] = address
-        #os.environ["MASTER_PORT"] = str(port)
 
 
 def load_actor_json(filename: str) -> List[RayActor]:
